@@ -43,7 +43,7 @@ Trade-off:
 
 import os
 from pathlib import Path
-from sentence_transformers import SentenceTransformer
+from dotenv import load_dotenv
 
 # Import configuration từ Task 4
 import sys
@@ -52,6 +52,7 @@ from task4_chunking_indexing import (
     EMBEDDING_MODEL,
     COLLECTION_NAME,
     CHROMA_DIR,
+    EMBEDDING_DIM,
 )
 
 # ------------------------------------------------------------------ #
@@ -68,8 +69,7 @@ GEMINI_API_KEY = os.getenv("GEMINI_API_KEY", "")
 # Model dùng để sinh hypothetical document (nhẹ, đủ dùng)
 HYDE_LLM_MODEL = os.getenv("HYDE_LLM_MODEL", "meta-llama/llama-3.1-8b-instruct:free")
 
-# Lazy-loaded global state
-_embedding_model: SentenceTransformer | None = None
+load_dotenv()
 
 
 # ------------------------------------------------------------------ #
@@ -91,21 +91,41 @@ def get_collection():
     return collection
 
 
-def get_embedding_model() -> SentenceTransformer:
-    """
-    Lấy embedding model (cùng model với Task 4).
-    Lazy-loaded: chỉ load 1 lần, tái sử dụng cho mọi query.
-    """
-    global _embedding_model
-    if _embedding_model is None:
-        _embedding_model = SentenceTransformer(EMBEDDING_MODEL)
-    return _embedding_model
-
-
 def _embed_text(text: str) -> list[float]:
-    """Embed một đoạn text thành vector float list."""
-    model = get_embedding_model()
-    return model.encode(text, show_progress_bar=False).tolist()
+    """Embed một đoạn text thành vector float list.
+
+    Strategy:
+      - If `OPENAI_API_KEY` is set, use OpenAI embeddings (same as Task 4).
+      - Otherwise, fall back to a deterministic local embedding (bag-of-words
+        hashing) with dimension `EMBEDDING_DIM` so tests can run offline.
+    """
+    load_dotenv()
+    api_key = os.getenv("OPENAI_API_KEY", "")
+    if api_key:
+        try:
+            from openai import OpenAI
+
+            client = OpenAI(api_key=api_key)
+            response = client.embeddings.create(model=EMBEDDING_MODEL, input=text)
+            emb = response.data[0].embedding
+            return emb
+        except Exception as e:
+            print(f"[embed] OpenAI embedding failed: {e}. Falling back to local embed.")
+
+    # Fallback: deterministic local embedding (hash-based) using EMBEDDING_DIM
+    try:
+        dim = int(EMBEDDING_DIM)
+    except Exception:
+        dim = 1536
+    vec = [0.0] * dim
+    for token in str(text).split():
+        idx = abs(hash(token)) % dim
+        vec[idx] += 1.0
+    # L2-normalize
+    norm = sum(x * x for x in vec) ** 0.5
+    if norm > 0:
+        vec = [x / norm for x in vec]
+    return vec
 
 
 def _query_chroma(vector: list[float], top_k: int) -> list[dict]:
