@@ -11,12 +11,13 @@ markitdown[pdf]>=0.1.0
 fpdf2>=2.7.0
 
 # Task 4 - Chunking & Indexing
-langchain-text-splitters>=0.2.0
+# Compatible with ragas==0.1.21, which requires langchain-core<0.3.
+langchain-text-splitters==0.2.4
 chromadb>=0.5.0
 
 # Task 4/5 - Embedding provider (mac dinh: sentence_transformers, local, khong can API key)
 # Doi provider qua bien EMBEDDING_PROVIDER trong .env: sentence_transformers | google | openai
-sentence-transformers>=2.2.0
+# sentence-transformers>=2.2.0
 # google-generativeai>=0.5.0  # Chi can neu EMBEDDING_PROVIDER=google (khong can neu dung mac dinh)
 # openai (provider "openai") da co san o muc Task 10 ben duoi, khong can cai them
 
@@ -36,7 +37,8 @@ streamlit>=1.35.0
 # Group project - Evaluation
 ragas==0.1.21
 datasets>=2.14.0
-langchain-openai>=0.1.0
+# Keep the LangChain packages on the same pre-0.3 core generation.
+langchain-openai==0.1.7
 
 # Testing (dung de cham diem bai ca nhan)
 pytest>=7.0.0

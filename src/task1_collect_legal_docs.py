@@ -26,8 +26,32 @@ và chỉ dùng nguồn công khai/được phép chia sẻ.
 """
 
 from pathlib import Path
+import json
+import re
+from html.parser import HTMLParser
+
+import requests
+from fpdf import FPDF
 
 DATA_DIR = Path(__file__).parent.parent / "data" / "landing" / "legal"
+
+DOCUMENTS = [
+    {
+        "url": "https://help.shopee.vn/portal/4/article/77251",
+        "filename": "returns-refund-policy-shopee.pdf",
+        "customer_role": "buyer",
+    },
+    {
+        "url": "https://help.shopee.vn/portal/4/article/79198",
+        "filename": "payment-methods-shopee.pdf",
+        "customer_role": "buyer",
+    },
+    {
+        "url": "https://help.shopee.vn/portal/4/article/77244",
+        "filename": "privacy-policy-shopee.pdf",
+        "customer_role": "both",
+    },
+]
 
 
 def setup_directory():
@@ -36,22 +60,83 @@ def setup_directory():
     print(f"✓ Thư mục đã sẵn sàng: {DATA_DIR}")
 
 
-# TODO: Tải file PDF/DOCX về DATA_DIR
-# Có thể tải thủ công hoặc viết script download nếu có direct link.
-#
-# Ví dụ nếu có direct link:
-#
-# import requests
-#
-# def download_file(url: str, filename: str):
-#     response = requests.get(url)
-#     filepath = DATA_DIR / filename
-#     filepath.write_bytes(response.content)
-#     print(f"✓ Đã tải: {filepath}")
-#
-# Nếu trang là HTML thuần (không phải PDF sẵn), có thể convert nội dung text
-# thành PDF đơn giản bằng thư viện fpdf2 (đã có trong requirements.txt).
+class TextExtractor(HTMLParser):
+    """Trích xuất text cơ bản từ trang Help Center HTML."""
+
+    def __init__(self):
+        super().__init__()
+        self.parts = []
+        self.skip_depth = 0
+
+    def handle_starttag(self, tag, attrs):
+        if tag in {"script", "style", "noscript"}:
+            self.skip_depth += 1
+        elif tag in {"p", "div", "br", "li", "h1", "h2", "h3", "h4"}:
+            self.parts.append("\n")
+
+    def handle_endtag(self, tag):
+        if tag in {"script", "style", "noscript"} and self.skip_depth:
+            self.skip_depth -= 1
+        elif tag in {"p", "div", "li", "h1", "h2", "h3", "h4"}:
+            self.parts.append("\n")
+
+    def handle_data(self, data):
+        if not self.skip_depth:
+            self.parts.append(data)
+
+    def text(self):
+        text = "".join(self.parts)
+        text = re.sub(r"[ \t]+", " ", text)
+        return re.sub(r"\n{3,}", "\n\n", text).strip()
+
+
+def html_to_pdf(html: bytes, output_path):
+    parser = TextExtractor()
+    parser.feed(html.decode("utf-8", errors="ignore"))
+    content = parser.text()
+
+    pdf = FPDF()
+    pdf.set_auto_page_break(auto=True, margin=15)
+    pdf.add_page()
+    # DejaVu supports Vietnamese Unicode characters.
+    pdf.add_font("DejaVu", fname="/usr/share/fonts/truetype/dejavu/DejaVuSans.ttf")
+    pdf.set_font("DejaVu", size=10)
+    pdf.multi_cell(0, 5, content or "Không trích xuất được nội dung trang.")
+    pdf.output(str(output_path))
+
+
+def download_document(document: dict) -> None:
+    """Tải bài viết chính sách và lưu thành PDF theo yêu cầu Task 1."""
+    response = requests.get(
+        document["url"],
+        headers={"User-Agent": "Mozilla/5.0 (RAG lab data collector)"},
+        timeout=30,
+    )
+    response.raise_for_status()
+
+    filepath = DATA_DIR / document["filename"]
+    html_to_pdf(response.content, filepath)
+
+    metadata_path = filepath.with_suffix(".json")
+    metadata_path.write_text(
+        json.dumps(
+            {
+                "source_url": document["url"],
+                "customer_role": document["customer_role"],
+                "content_type": response.headers.get("content-type", ""),
+            },
+            ensure_ascii=False,
+            indent=2,
+        ),
+        encoding="utf-8",
+    )
+    print(f"✓ Đã tải: {filepath}")
 
 
 if __name__ == "__main__":
     setup_directory()
+    for document in DOCUMENTS:
+        try:
+            download_document(document)
+        except requests.RequestException as exc:
+            print(f"✗ Không thể tải {document['url']}: {exc}")
