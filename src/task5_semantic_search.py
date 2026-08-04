@@ -43,7 +43,9 @@ Trade-off:
 
 import os
 from pathlib import Path
-from sentence_transformers import SentenceTransformer
+from dotenv import load_dotenv
+
+load_dotenv()
 
 # Import configuration từ Task 4
 import sys
@@ -68,8 +70,8 @@ GEMINI_API_KEY = os.getenv("GEMINI_API_KEY", "")
 # Model dùng để sinh hypothetical document (nhẹ, đủ dùng)
 HYDE_LLM_MODEL = os.getenv("HYDE_LLM_MODEL", "meta-llama/llama-3.1-8b-instruct:free")
 
-# Lazy-loaded global state
-_embedding_model: SentenceTransformer | None = None
+# Lazy-loaded OpenAI client. Embeddings được tạo từ API, không chạy local.
+_embedding_client = None
 
 
 # ------------------------------------------------------------------ #
@@ -91,21 +93,28 @@ def get_collection():
     return collection
 
 
-def get_embedding_model() -> SentenceTransformer:
+def get_embedding_model():
     """
-    Lấy embedding model (cùng model với Task 4).
-    Lazy-loaded: chỉ load 1 lần, tái sử dụng cho mọi query.
+    Lấy OpenAI client dùng cùng model với Task 4.
     """
-    global _embedding_model
-    if _embedding_model is None:
-        _embedding_model = SentenceTransformer(EMBEDDING_MODEL)
-    return _embedding_model
+    global _embedding_client
+    if _embedding_client is None:
+        api_key = os.getenv("OPENAI_API_KEY", "")
+        if not api_key:
+            raise RuntimeError("Thiếu OPENAI_API_KEY trong file .env")
+        from openai import OpenAI
+        _embedding_client = OpenAI(api_key=api_key)
+    return _embedding_client
 
 
 def _embed_text(text: str) -> list[float]:
     """Embed một đoạn text thành vector float list."""
-    model = get_embedding_model()
-    return model.encode(text, show_progress_bar=False).tolist()
+    client = get_embedding_model()
+    response = client.embeddings.create(
+        model=EMBEDDING_MODEL,
+        input=text,
+    )
+    return response.data[0].embedding
 
 
 def _query_chroma(vector: list[float], top_k: int) -> list[dict]:
@@ -243,7 +252,7 @@ def semantic_search(query: str, top_k: int = 10) -> list[dict]:
 
     Pipeline:
         query string
-            → embed bằng BAAI/bge-m3
+            → embed bằng OpenAI text-embedding-3-small
             → query ChromaDB (hnsw:cosine)
             → chuyển đổi distance → similarity (1 - dist)
             → sort descending
@@ -279,7 +288,7 @@ def semantic_search_hyde(
     Pipeline:
         query string
             → LLM sinh hypothetical document (100-150 từ tiếng Việt)
-            → embed hypothetical document bằng BAAI/bge-m3
+            → embed hypothetical document bằng OpenAI text-embedding-3-small
             → query ChromaDB (hnsw:cosine) với vector của hypothetical doc
             → chuyển đổi distance → similarity
             → sort descending

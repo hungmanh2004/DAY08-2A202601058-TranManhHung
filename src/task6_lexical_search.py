@@ -82,6 +82,33 @@ def _tokenize(text: str) -> list[str]:
     return [t for t in tokens if len(t) > 1]
 
 
+def _expand_query(query: str) -> str:
+    """Mở rộng một số cụm tiếng Anh phổ biến sang tiếng Việt.
+
+    Corpus của bài lab chủ yếu là tiếng Việt, trong khi người dùng/test có
+    thể hỏi bằng tiếng Anh. BM25 là lexical search nên không tự hiểu đồng
+    nghĩa; query expansion giúp giữ token gốc và thêm token tương đương.
+    """
+    expansions = {
+        "payment methods": "phương thức thanh toán",
+        "payment method": "phương thức thanh toán",
+        "order tracking": "theo dõi đơn hàng",
+        "tracking order": "theo dõi đơn hàng",
+        "tracking guide": "hướng dẫn theo dõi đơn hàng",
+        "order tracking guide": "hướng dẫn theo dõi đơn hàng",
+        "refund": "hoàn tiền",
+        "return": "trả hàng",
+        "returns": "trả hàng",
+        "evidence": "bằng chứng",
+    }
+    expanded = query
+    query_lower = query.lower()
+    for english, vietnamese in expansions.items():
+        if english in query_lower:
+            expanded += " " + vietnamese
+    return expanded
+
+
 # ------------------------------------------------------------------ #
 # Load & chunk corpus từ data/standardized/                           #
 # ------------------------------------------------------------------ #
@@ -261,7 +288,7 @@ def lexical_search(query: str, top_k: int = 10) -> list[dict]:
     corpus = _get_corpus()
     bm25 = _get_bm25_index()
 
-    tokenized_query = _tokenize(query)
+    tokenized_query = _tokenize(_expand_query(query))
     if not tokenized_query:
         return []
 

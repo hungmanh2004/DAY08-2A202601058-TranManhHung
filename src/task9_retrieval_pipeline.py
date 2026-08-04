@@ -77,33 +77,60 @@ def retrieve(
             'source': str  # 'hybrid' hoặc 'pageindex'
         }
     """
-    # TODO: Implement full retrieval pipeline
-    #
-    # Step 1: Song song chạy semantic + lexical
-    # dense_results = semantic_search(query, top_k=top_k * 2)
-    # sparse_results = lexical_search(query, top_k=top_k * 2)
-    #
-    # Step 2: Merge bằng RRF
-    # merged = rerank_rrf([dense_results, sparse_results], top_k=top_k * 2)
-    # for item in merged:
-    #     item["source"] = "hybrid"
-    #
-    # Step 3: Rerank
-    # if use_reranking and merged:
-    #     final_results = rerank(query, merged, top_k=top_k, method=RERANK_METHOD)
-    # else:
-    #     final_results = merged[:top_k]
-    #
-    # Step 4: Check threshold DÙNG ĐIỂM COSINE GỐC (dense_results), KHÔNG PHẢI RRF
-    # best_score = dense_results[0]["score"] if dense_results else 0.0
-    # if best_score < score_threshold:
-    #     print(f"  ⚠ Semantic best score ({best_score:.3f}) < threshold ({score_threshold})")
-    #     fallback = pageindex_search(query, top_k=top_k)
-    #     if fallback:
-    #         return fallback
-    #
-    # return final_results[:top_k]
-    raise NotImplementedError("Implement retrieve")
+    if not query or not query.strip() or top_k <= 0:
+        return []
+
+    candidate_k = max(top_k * 2, top_k)
+
+    # 1. Chạy hai retriever độc lập. Giữ nguyên dense score để kiểm tra fallback.
+    dense_results = semantic_search(query, top_k=candidate_k)
+    sparse_results = lexical_search(query, top_k=candidate_k)
+
+    # 2. Hybrid merge bằng RRF. RRF chỉ dùng để xếp hạng, không dùng threshold.
+    if dense_results or sparse_results:
+        merged = rerank_rrf(
+            [dense_results, sparse_results],
+            top_k=candidate_k,
+        )
+    else:
+        merged = []
+
+    for item in merged:
+        item["source"] = "hybrid"
+
+    # 3. Vì merged đã được RRF rerank, không RRF lần hai.
+    # Cross-encoder/MMR cần dữ liệu bổ sung nên mặc định giữ thứ tự RRF.
+    if use_reranking and RERANK_METHOD != "rrf" and merged:
+        final_results = rerank(
+            query,
+            merged,
+            top_k=top_k,
+            method=RERANK_METHOD,
+        )
+    else:
+        final_results = merged[:top_k]
+
+    # 4. Fallback dựa trên cosine score gốc từ semantic search.
+    best_dense_score = (
+        float(dense_results[0].get("score", 0.0))
+        if dense_results else 0.0
+    )
+    if best_dense_score < score_threshold:
+        print(
+            f"  ⚠ Semantic best score ({best_dense_score:.3f}) "
+            f"< threshold ({score_threshold:.3f}); trying PageIndex"
+        )
+        try:
+            fallback_results = pageindex_search(query, top_k=top_k)
+        except Exception as exc:
+            print(f"  ⚠ PageIndex fallback failed: {exc}")
+            fallback_results = []
+        if fallback_results:
+            for item in fallback_results:
+                item["source"] = "pageindex"
+            return fallback_results[:top_k]
+
+    return final_results[:top_k]
 
 
 if __name__ == "__main__":
