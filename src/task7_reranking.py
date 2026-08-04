@@ -118,6 +118,14 @@ def rerank_rrf(
 
     RRF(d) = Σ 1 / (k + rank_r(d))
 
+    Cơ chế:
+        - Mỗi document nhận điểm từ mỗi ranker theo công thức 1/(k+rank).
+        - k=60 (Cormack et al. 2009) làm mượt ảnh hưởng của các rank cao.
+        - Document xuất hiện ở nhiều ranker (semantic + lexical) sẽ tích lũy
+          điểm từ cả hai → tự nhiên được ưu tiên hơn.
+        - Điểm RRF KHÔNG phản ánh độ tương đồng thực (top-1 ≈ 1/(k+1) ≈ 0.016),
+          chỉ dùng để xếp hạng — đừng dùng làm threshold fallback ở Task 9.
+
     Args:
         ranked_lists: List of ranked result lists (mỗi list từ 1 ranker)
         top_k: Số lượng kết quả cuối cùng
@@ -126,28 +134,27 @@ def rerank_rrf(
     Returns:
         List of top_k candidates sorted by RRF score descending.
     """
-    # TODO: Implement RRF
-    #
-    # rrf_scores = {}  # content -> score
-    # content_map = {}  # content -> full dict
-    #
-    # for ranked_list in ranked_lists:
-    #     for rank, item in enumerate(ranked_list, 1):
-    #         key = item["content"]
-    #         rrf_scores[key] = rrf_scores.get(key, 0) + 1 / (k + rank)
-    #         content_map[key] = item
-    #
-    # # Sort by RRF score
-    # sorted_items = sorted(rrf_scores.items(), key=lambda x: x[1], reverse=True)
-    #
-    # results = []
-    # for content, score in sorted_items[:top_k]:
-    #     item = content_map[content].copy()
-    #     item["score"] = score
-    #     results.append(item)
-    #
-    # return results
-    raise NotImplementedError("Implement rerank_rrf")
+    rrf_scores: dict[str, float] = {}  # content -> tổng RRF score
+    content_map: dict[str, dict] = {}  # content -> full dict (giữ metadata gốc)
+
+    for ranked_list in ranked_lists:
+        for rank, item in enumerate(ranked_list, 1):
+            key = item["content"]
+            rrf_scores[key] = rrf_scores.get(key, 0.0) + 1.0 / (k + rank)
+            # Lưu item gốc; nếu document xuất hiện ở nhiều list, giữ bản đầu tiên
+            if key not in content_map:
+                content_map[key] = item
+
+    # Sắp xếp theo RRF score giảm dần
+    sorted_items = sorted(rrf_scores.items(), key=lambda x: x[1], reverse=True)
+
+    results = []
+    for content, score in sorted_items[:top_k]:
+        item = content_map[content].copy()
+        item["score"] = score  # ghi đè bằng điểm RRF đã fuse
+        results.append(item)
+
+    return results
 
 
 # =============================================================================
@@ -159,27 +166,35 @@ def rerank(
     candidates: list[dict],
     top_k: int = 5,
     method: str = "rrf",  # "cross_encoder" | "mmr" | "rrf"
+    ranked_lists: Optional[list[list[dict]]] = None,
 ) -> list[dict]:
     """
     Unified reranking interface.
 
     Args:
         query: Câu truy vấn
-        candidates: Danh sách candidates từ retrieval
+        candidates: Danh sách candidates từ retrieval (dùng cho cross_encoder / rrf đơn list)
         top_k: Số lượng kết quả sau rerank
-        method: Phương pháp reranking
+        method: Phương pháp reranking ("cross_encoder" | "mmr" | "rrf")
+        ranked_lists: Khi method="rrf" và muốn fuse nhiều list (semantic + lexical),
+                      truyền vào đây. Nếu None, candidates được wrap thành 1 list duy nhất.
 
     Returns:
         List of top_k reranked candidates.
     """
     if method == "cross_encoder":
         return rerank_cross_encoder(query, candidates, top_k)
+
     elif method == "mmr":
-        # Cần query_embedding - embed query trước
-        raise NotImplementedError("Call rerank_mmr with query_embedding")
+        # Cần query_embedding — embed query bên ngoài rồi gọi rerank_mmr trực tiếp.
+        raise NotImplementedError("Gọi rerank_mmr(query_embedding, candidates, top_k) trực tiếp")
+
     elif method == "rrf":
-        # RRF cần nhiều ranked lists - gọi riêng
-        raise NotImplementedError("Call rerank_rrf with ranked_lists")
+        # Nếu không truyền ranked_lists, dùng candidates như 1 ranked list.
+        # Trong Task 9, truyền [semantic_results, lexical_results] để fuse đúng cách.
+        lists = ranked_lists if ranked_lists is not None else [candidates]
+        return rerank_rrf(lists, top_k=top_k)
+
     else:
         raise ValueError(f"Unknown rerank method: {method}")
 
