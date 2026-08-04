@@ -25,6 +25,8 @@ Logic:
     điểm số giữa hai nhóm rồi chọn ngưỡng nằm giữa.
 """
 
+from concurrent.futures import ThreadPoolExecutor
+
 from .task5_semantic_search import semantic_search
 from .task6_lexical_search import lexical_search
 from .task7_reranking import rerank, rerank_rrf
@@ -103,7 +105,90 @@ def retrieve(
     #         return fallback
     #
     # return final_results[:top_k]
-    raise NotImplementedError("Implement retrieve")
+    if not isinstance(query, str) or not query.strip() or top_k <= 0:
+        return []
+
+    query = query.strip()
+    candidate_k = top_k * 2
+
+    # Dense retrieval and BM25 are independent, so run them concurrently.
+    # A failure in one retriever must not discard useful results from the other.
+    dense_results: list[dict] = []
+    sparse_results: list[dict] = []
+    with ThreadPoolExecutor(max_workers=2) as executor:
+        dense_future = executor.submit(semantic_search, query, top_k=candidate_k)
+        sparse_future = executor.submit(lexical_search, query, top_k=candidate_k)
+
+        try:
+            dense_results = dense_future.result() or []
+        except Exception as exc:
+            print(f"[Task 9] Semantic search failed: {exc}")
+
+        try:
+            sparse_results = sparse_future.result() or []
+        except Exception as exc:
+            print(f"[Task 9] Lexical search failed: {exc}")
+
+    # Fallback quality must use the original cosine similarity, not the
+    # rank-based RRF score (whose scale does not express absolute relevance).
+    best_dense_score = (
+        float(dense_results[0].get("score", 0.0)) if dense_results else 0.0
+    )
+
+    # RRF is the hybrid fusion step. Applying RRF again to this single fused
+    # list would only replace scores without adding ranking information.
+    merged = rerank_rrf([dense_results, sparse_results], top_k=candidate_k)
+    hybrid_results = [
+        {
+            **item,
+            "metadata": item.get("metadata", {}),
+            "source": "hybrid",
+        }
+        for item in merged
+    ]
+
+    # RRF was already applied above. Only run a second stage when another
+    # reranking method, such as a cross-encoder, is explicitly configured.
+    if use_reranking and hybrid_results and RERANK_METHOD != "rrf":
+        final_results = rerank(
+            query,
+            hybrid_results,
+            top_k=top_k,
+            method=RERANK_METHOD,
+        )
+        final_results = [
+            {
+                **item,
+                "metadata": item.get("metadata", {}),
+                "source": "hybrid",
+            }
+            for item in final_results
+        ]
+    else:
+        final_results = hybrid_results[:top_k]
+
+    if best_dense_score < score_threshold:
+        print(
+            f"[Task 9] Semantic best score ({best_dense_score:.3f}) "
+            f"< threshold ({score_threshold:.3f}); trying PageIndex fallback."
+        )
+        try:
+            fallback = pageindex_search(query, top_k=top_k) or []
+        except Exception as exc:
+            print(f"[Task 9] PageIndex fallback failed: {exc}")
+            fallback = []
+
+        if fallback:
+            return [
+                {
+                    **item,
+                    "metadata": item.get("metadata", {}),
+                    "source": "pageindex",
+                }
+                for item in fallback[:top_k]
+            ]
+
+    return final_results[:top_k]
 
 
 if __name__ == "__main__":
