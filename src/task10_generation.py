@@ -41,16 +41,6 @@ TEMPERATURE = 0.3
 LLM_MODEL = "openai/gpt-4o-mini"  # hoặc model ":free" nếu chưa có credit
 
 
-def _get_llm_client():
-    from openai import OpenAI
-
-    api_key = os.getenv("OPENROUTER_API_KEY") or os.getenv("OPENAI_API_KEY")
-    if not api_key:
-        return None
-
-    return OpenAI(api_key=api_key, base_url="https://openrouter.ai/api/v1")
-
-
 # =============================================================================
 # SYSTEM PROMPT
 # =============================================================================
@@ -88,8 +78,10 @@ def reorder_for_llm(chunks: list[dict]) -> list[dict]:
         List reordered để maximize LLM attention.
     """
     if len(chunks) <= 2:
-        return chunks
+        return list(chunks)
 
+    # Giữ phần tử quan trọng nhất ở đầu; các phần tử còn lại được phân bố
+    # để những chunk quan trọng không bị dồn hết vào giữa prompt.
     front = chunks[::2]
     back = chunks[1::2]
     return front + back[::-1]
@@ -110,25 +102,17 @@ def format_context(chunks: list[dict]) -> str:
     Returns:
         Formatted context string.
     """
-    context_parts: list[str] = []
+    context_parts = []
     for i, chunk in enumerate(chunks, 1):
         metadata = chunk.get("metadata", {}) or {}
         source = metadata.get("source", f"Source {i}")
         doc_type = metadata.get("type", "unknown")
-        page = metadata.get("page")
-        section_title = metadata.get("section_title") or metadata.get("title")
-
-        header_parts = [f"Document {i}", f"Source: {source}", f"Type: {doc_type}"]
-        if page is not None:
-            header_parts.append(f"Page: {page}")
-        if section_title:
-            header_parts.append(f"Section: {section_title}")
-
+        section = metadata.get("section_title", "")
+        section_label = f" | Section: {section}" if section else ""
         context_parts.append(
-            f"[{ ' | '.join(header_parts) }]\n"
+            f"[Document {i} | Source: {source} | Type: {doc_type}{section_label}]\n"
             f"{chunk.get('content', '')}\n"
         )
-
     return "\n---\n".join(context_parts)
 
 
@@ -158,56 +142,65 @@ def generate_with_citation(query: str, top_k: int = TOP_K) -> dict:
             'retrieval_source': str  # 'hybrid' hoặc 'pageindex'
         }
     """
+    if not query or not query.strip():
+        return {"answer": "Tôi không thể xác minh thông tin này từ nguồn hiện có", "sources": [], "retrieval_source": "none"}
+
     chunks = retrieve(query, top_k=top_k)
-    reordered = reorder_for_llm(chunks)
-    context = format_context(reordered)
-
-    user_message = f"""Context:
-{context}
-
----
-
-Question: {query}
-
-Hãy trả lời ngắn gọn, có citation ngay sau mỗi ý, và chỉ dùng thông tin trong context."""
-
-    retrieval_source = chunks[0].get("source", "hybrid") if chunks else "none"
-
-    client = _get_llm_client()
-    if client is None:
-        answer = "Tôi không thể xác minh thông tin này từ nguồn hiện có."
-        if reordered:
-            sources_preview = "; ".join(
-                f"{item.get('metadata', {}).get('source', 'Source')}"
-                for item in reordered[:top_k]
-            )
-            answer = f"{answer} Nguồn đã truy xuất: {sources_preview}."
+    if not chunks:
         return {
-            "answer": answer,
-            "sources": reordered,
-            "retrieval_source": retrieval_source,
+            "answer": "Tôi không thể xác minh thông tin này từ nguồn hiện có",
+            "sources": [],
+            "retrieval_source": "none",
         }
 
-    try:
-        response = client.chat.completions.create(
-            model=LLM_MODEL,
-            messages=[
-                {"role": "system", "content": SYSTEM_PROMPT},
-                {"role": "user", "content": user_message},
-            ],
-            temperature=TEMPERATURE,
-            top_p=TOP_P,
-        )
-        answer = response.choices[0].message.content or ""
-        if not answer.strip():
-            answer = "Tôi không thể xác minh thông tin này từ nguồn hiện có."
-    except Exception as exc:
-        print(f"⚠ LLM generation failed: {exc}")
-        answer = "Tôi không thể xác minh thông tin này từ nguồn hiện có."
+    reordered = reorder_for_llm(chunks)
+    context = format_context(reordered)
+    user_message = (
+        f"Context tài liệu:\n{context}\n\n"
+        f"Câu hỏi: {query}\n\n"
+        "Chỉ sử dụng Context. Sau mỗi thông tin thực tế, ghi citation theo dạng "
+        "[tên nguồn, năm]. Nếu không có bằng chứng trực tiếp, hãy nói: "
+        "'Tôi không thể xác minh thông tin này từ nguồn hiện có'."
+    )
 
+    from openai import OpenAI
+
+    openrouter_key = os.getenv("OPENROUTER_API_KEY", "")
+    openai_key = os.getenv("OPENAI_API_KEY", "")
+    if openrouter_key:
+        client = OpenAI(
+            api_key=openrouter_key,
+            base_url="https://openrouter.ai/api/v1",
+        )
+        model = os.getenv("LLM_MODEL", LLM_MODEL)
+    elif openai_key:
+        client = OpenAI(api_key=openai_key)
+        # openai/gpt-4o-mini là tên dùng cho OpenRouter; OpenAI dùng gpt-4o-mini.
+        model = os.getenv("LLM_MODEL", "gpt-4o-mini").replace("openai/", "")
+    else:
+        raise RuntimeError("Thiếu OPENAI_API_KEY hoặc OPENROUTER_API_KEY trong .env")
+
+    response = client.chat.completions.create(
+        model=model,
+        messages=[
+            {"role": "system", "content": SYSTEM_PROMPT},
+            {"role": "user", "content": user_message},
+        ],
+        temperature=TEMPERATURE,
+        # top_p=0.9 giữ một ít linh hoạt nhưng vẫn phù hợp với câu trả lời factual.
+        top_p=TOP_P,
+    )
+    answer = (response.choices[0].message.content or "").strip()
+    if not answer:
+        answer = "Tôi không thể xác minh thông tin này từ nguồn hiện có"
+
+    retrieval_sources = {chunk.get("source", "hybrid") for chunk in chunks}
+    retrieval_source = (
+        next(iter(retrieval_sources)) if len(retrieval_sources) == 1 else "hybrid"
+    )
     return {
         "answer": answer,
-        "sources": reordered,
+        "sources": chunks,
         "retrieval_source": retrieval_source,
     }
 

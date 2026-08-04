@@ -44,33 +44,36 @@ def _get_pageindex_client():
     """
     from pageindex import PageIndexClient
 
-    return PageIndexClient(api_key=PAGEINDEX_API_KEY, workspace=str(PAGEINDEX_WORKSPACE))
+    # PageIndex Python SDK hiện tại chỉ nhận api_key.
+    # Workspace local của bài lab vẫn được dùng riêng để lưu manifest.
+    return PageIndexClient(api_key=PAGEINDEX_API_KEY)
 
 
-def _load_indexed_docs_manifest() -> set[str]:
+def _load_indexed_docs_manifest() -> dict[str, str]:
     """
     Lưu các file đã được index để tránh re-index lặp lại trên mỗi lần chạy.
     """
     manifest_path = PAGEINDEX_WORKSPACE / "indexed_documents.json"
     if not manifest_path.exists():
-        return set()
+        return {}
 
     try:
         with open(manifest_path, "r", encoding="utf-8") as f:
             payload = json.load(f)
     except (OSError, json.JSONDecodeError):
-        return set()
+        return {}
 
+    # Tương thích manifest cũ dạng list: chưa có doc_id nên cần upload lại.
     if isinstance(payload, list):
-        return {str(item) for item in payload}
-    return set()
+        return {}
+    return {str(path): str(doc_id) for path, doc_id in payload.items()}
 
 
-def _save_indexed_docs_manifest(indexed_files: set[str]) -> None:
+def _save_indexed_docs_manifest(indexed_files: dict[str, str]) -> None:
     manifest_path = PAGEINDEX_WORKSPACE / "indexed_documents.json"
     manifest_path.parent.mkdir(parents=True, exist_ok=True)
     with open(manifest_path, "w", encoding="utf-8") as f:
-        json.dump(sorted(indexed_files), f, ensure_ascii=False, indent=2)
+        json.dump(indexed_files, f, ensure_ascii=False, indent=2)
 
 
 def _extract_json_payload(text: str):
@@ -210,9 +213,12 @@ def upload_documents():
             continue
 
         try:
-            doc_id = client.index(md_path, mode="md")
+            response = client.submit_document(md_path)
+            doc_id = response.get("doc_id") if isinstance(response, dict) else None
+            if not doc_id:
+                raise RuntimeError(f"PageIndex không trả về doc_id: {response}")
             uploaded[md_path] = doc_id
-            indexed_files.add(md_path)
+            indexed_files[md_path] = doc_id
             print(f"  ✓ Indexed: {md_file.relative_to(STANDARDIZED_DIR)} -> {doc_id}")
         except Exception as exc:
             print(f"  ✗ Failed to index {md_file.name}: {exc}")
@@ -249,15 +255,16 @@ def pageindex_search(query: str, top_k: int = 5) -> list[dict]:
 
     # Auto-index nếu chưa có dữ liệu local. Điều này giúp task chạy được ngay
     # sau khi cài dependencies mà không cần thao tác tay.
-    if not client.documents:
+    indexed_files = _load_indexed_docs_manifest()
+    if not indexed_files:
         upload_documents()
-        client = _get_pageindex_client()
+        indexed_files = _load_indexed_docs_manifest()
 
-    if not client.documents:
+    if not indexed_files:
         return []
 
     all_results: list[dict] = []
-    for doc_rank, doc_id in enumerate(client.documents.keys(), start=1):
+    for doc_rank, doc_id in enumerate(indexed_files.values(), start=1):
         doc_results = _search_single_document(client, doc_id, query, top_k, doc_rank)
         all_results.extend(doc_results)
 

@@ -45,6 +45,8 @@ import os
 from pathlib import Path
 from dotenv import load_dotenv
 
+load_dotenv()
+
 # Import configuration từ Task 4
 import sys
 sys.path.append(str(Path(__file__).parent))
@@ -52,7 +54,6 @@ from task4_chunking_indexing import (
     EMBEDDING_MODEL,
     COLLECTION_NAME,
     CHROMA_DIR,
-    EMBEDDING_DIM,
 )
 
 # ------------------------------------------------------------------ #
@@ -69,7 +70,8 @@ GEMINI_API_KEY = os.getenv("GEMINI_API_KEY", "")
 # Model dùng để sinh hypothetical document (nhẹ, đủ dùng)
 HYDE_LLM_MODEL = os.getenv("HYDE_LLM_MODEL", "meta-llama/llama-3.1-8b-instruct:free")
 
-load_dotenv()
+# Lazy-loaded OpenAI client. Embeddings được tạo từ API, không chạy local.
+_embedding_client = None
 
 
 # ------------------------------------------------------------------ #
@@ -91,41 +93,28 @@ def get_collection():
     return collection
 
 
-def _embed_text(text: str) -> list[float]:
-    """Embed một đoạn text thành vector float list.
-
-    Strategy:
-      - If `OPENAI_API_KEY` is set, use OpenAI embeddings (same as Task 4).
-      - Otherwise, fall back to a deterministic local embedding (bag-of-words
-        hashing) with dimension `EMBEDDING_DIM` so tests can run offline.
+def get_embedding_model():
     """
-    load_dotenv()
-    api_key = os.getenv("OPENAI_API_KEY", "")
-    if api_key:
-        try:
-            from openai import OpenAI
+    Lấy OpenAI client dùng cùng model với Task 4.
+    """
+    global _embedding_client
+    if _embedding_client is None:
+        api_key = os.getenv("OPENAI_API_KEY", "")
+        if not api_key:
+            raise RuntimeError("Thiếu OPENAI_API_KEY trong file .env")
+        from openai import OpenAI
+        _embedding_client = OpenAI(api_key=api_key)
+    return _embedding_client
 
-            client = OpenAI(api_key=api_key)
-            response = client.embeddings.create(model=EMBEDDING_MODEL, input=text)
-            emb = response.data[0].embedding
-            return emb
-        except Exception as e:
-            print(f"[embed] OpenAI embedding failed: {e}. Falling back to local embed.")
 
-    # Fallback: deterministic local embedding (hash-based) using EMBEDDING_DIM
-    try:
-        dim = int(EMBEDDING_DIM)
-    except Exception:
-        dim = 1536
-    vec = [0.0] * dim
-    for token in str(text).split():
-        idx = abs(hash(token)) % dim
-        vec[idx] += 1.0
-    # L2-normalize
-    norm = sum(x * x for x in vec) ** 0.5
-    if norm > 0:
-        vec = [x / norm for x in vec]
-    return vec
+def _embed_text(text: str) -> list[float]:
+    """Embed một đoạn text thành vector float list."""
+    client = get_embedding_model()
+    response = client.embeddings.create(
+        model=EMBEDDING_MODEL,
+        input=text,
+    )
+    return response.data[0].embedding
 
 
 def _query_chroma(vector: list[float], top_k: int) -> list[dict]:
@@ -263,7 +252,7 @@ def semantic_search(query: str, top_k: int = 10) -> list[dict]:
 
     Pipeline:
         query string
-            → embed bằng BAAI/bge-m3
+            → embed bằng OpenAI text-embedding-3-small
             → query ChromaDB (hnsw:cosine)
             → chuyển đổi distance → similarity (1 - dist)
             → sort descending
@@ -299,7 +288,7 @@ def semantic_search_hyde(
     Pipeline:
         query string
             → LLM sinh hypothetical document (100-150 từ tiếng Việt)
-            → embed hypothetical document bằng BAAI/bge-m3
+            → embed hypothetical document bằng OpenAI text-embedding-3-small
             → query ChromaDB (hnsw:cosine) với vector của hypothetical doc
             → chuyển đổi distance → similarity
             → sort descending
