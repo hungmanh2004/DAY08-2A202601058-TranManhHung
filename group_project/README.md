@@ -69,8 +69,34 @@ Xem code mẫu (DeepEval/RAGAS/TruLens) chi tiết trong `README.md` gốc mục
 
 ## Kiến Trúc Hệ Thống
 
-```
-[Vẽ diagram kiến trúc ở đây]
+```mermaid
+flowchart TD
+    User([Người Dùng]) --> UI[Giao diện Chat\n(Streamlit / Chainlit)]
+    
+    subgraph "Retrieval Pipeline"
+        UI --> Query[User Query]
+        Query --> Semantic[Semantic Search\n(ChromaDB)]
+        Query --> Lexical[Lexical Search\n(BM25)]
+        
+        Semantic --> Merge[Merge Results\n(Reciprocal Rank Fusion)]
+        Lexical --> Merge
+        
+        Merge --> Rerank[Reranking\n(Cross-Encoder)]
+        
+        Rerank --> Check{Best Score\n< Threshold?}
+        Check -- Có --> Fallback[Fallback: PageIndex\nVectorless Search]
+        Check -- Không --> TopK[Top K Chunks]
+        Fallback --> TopK
+    end
+    
+    subgraph "Generation Pipeline"
+        TopK --> Reorder[Reorder Context\n(Chống Lost-in-the-middle)]
+        Reorder --> Prompt[Build Prompt\n(Context + Query)]
+        Prompt --> LLM[LLM Generation\n(OpenRouter/OpenAI)]
+    end
+    
+    LLM --> Response[Câu trả lời có Citation]
+    Response --> UI
 ```
 
 ---
@@ -79,10 +105,11 @@ Xem code mẫu (DeepEval/RAGAS/TruLens) chi tiết trong `README.md` gốc mục
 
 | Thành viên | MSSV | Nhiệm vụ | Trạng thái |
 |-----------|------|----------|------------|
-| | | | |
-| | | | |
-| | | | |
-| | | | |
+| Trần Mạnh Hùng | 2A202601058 | Role 1 | Hoàn thành |
+| Trương Đan Vi | 2A2026 | Role 3 | Hoàn thành |
+| Lê Văn Tuệ | 2A202601048 | Role 4 | Hoàn thành |
+| Nguyễn Cảnh Hoàng | 2A2026 | Role 5 | Hoàn thành |
+| Hồ Trọng Hảo | 2A2026 | Role 2 | Hoàn thành |
 
 ---
 
