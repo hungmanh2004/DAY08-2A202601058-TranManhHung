@@ -586,10 +586,10 @@ flowchart TD
 | Thành viên | MSSV | Nhiệm vụ | Trạng thái |
 |-----------|------|----------|------------|
 |Trần Mạnh Hùng | 2A202601058 |Role 1 |Hoàn thành |
-|Trương Đan Vi | 2A2026 |Role 3 |Hoàn thành |
+|Trương Đan Vi | 2A202601178 |Role 3 |Hoàn thành |
 |Lê Văn Tuệ |2A202601048 |Role 4 |Hoàn thành |
-|Nguyễn Cảnh Hoàng | 2A2026 |Role 5 |Hoàn thành |
-|Hồ Trọng Hảo | 2A2026 |Role 2 |Hoàn thành |
+|Nguyễn Cảnh Hoàng | 2A202601588 |Role 5 |Hoàn thành |
+|Hồ Trọng Hảo | 2A202601358 |Role 2 |Hoàn thành |
 
 ---
 
